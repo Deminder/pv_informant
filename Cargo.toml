@@ -1,0 +1,29 @@
+[package]
+name = "pv_informant"
+description = "Informant JSON-API for photo-voltaic data from influxdb" 
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+authors = ['Deminder <tremminder@gmail.com>']
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+hyper = { version = "0.14", features = ["server", "http1", "http2", "tcp", "client"] }
+tokio = { version = "1", features = ["full"] }
+influxdb = { version = "0.5", features = ["derive"] }
+futures = "0.3"
+serde = "1"
+serde_json = "1"
+chrono = "0.4"
+bytes = "1"
+mac_address = { version = "1", features = ["serde"] }
+wake-on-lan = "0.2"
+log = "0.4"
+env_logger = "0.9"
+anyhow = "1"
+async-trait = "0.1.52"
+
+[dev-dependencies]
+assert_matches = "1.5"
