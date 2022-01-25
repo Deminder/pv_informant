@@ -15,7 +15,7 @@ pub struct ReportRes {
 
 #[derive(Deserialize)]
 pub struct ReportReq {
-    status: WorkerStatus,
+    working: bool,
     wake: bool,
 }
 
@@ -28,9 +28,18 @@ impl RequestHandler<ReportReq, ReportRes> for ReportRequestHandler {
         let mac = context.remote_mac().await?.ok_or_else(|| {
             api_err!(StatusCode::FORBIDDEN, "mac address of requestor not found!")
         })?;
-        log_workerstatus(&mac, req.status, req.wake, &context.influx_client)
-            .await
-            .map_err(|e| fwd_err!("Failed to log reported status! {}", e))?;
+        log_workerstatus(
+            &mac,
+            if req.working {
+                WorkerStatus::Working
+            } else {
+                WorkerStatus::Inquisitive
+            },
+            req.wake,
+            &context.influx_client,
+        )
+        .await
+        .map_err(|e| fwd_err!("Failed to log reported status! {}", e))?;
         Ok(ReportRes {
             woken: context.woken_in_previous_heartbeat(&mac),
         })

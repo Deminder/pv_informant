@@ -7,9 +7,6 @@ extern crate async_trait;
 // size 'dyn Future' is not known at compile time so Pin<Box<dyn Future<Output = ...>>> is used
 // https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html?highlight=BoxFu#recursion
 
-#[macro_use]
-extern crate serde;
-
 #[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
