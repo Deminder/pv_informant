@@ -25,6 +25,7 @@ async fn waker_heartbeat(context: Context) {
                     } else {
                         WorkerStatus::Awake
                     },
+                    true,
                     &context.influx_client,
                 )
             }))

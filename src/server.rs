@@ -4,6 +4,7 @@ use std::str::FromStr;
 use crate::api_baderr;
 use crate::context::Context;
 use crate::errors::{ApiError, GenericError, Result};
+use crate::excess_handler::ExcessRequestHandler;
 use crate::interval_handler::IntervalRequestHandler;
 use crate::report_handler::ReportRequestHandler;
 use hyper::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH};
@@ -50,7 +51,9 @@ impl HyperServerWrapper for InformantServer {
 
 const INTERVAL: IntervalRequestHandler = IntervalRequestHandler {};
 const REPORT: ReportRequestHandler = ReportRequestHandler {};
-static INDEX: &[u8] = b"<p>POST json to /interval or /report</p>";
+const EXCESS: ExcessRequestHandler = ExcessRequestHandler {};
+
+static INDEX: &[u8] = b"<p>GET /excess or POST json to /interval or /report</p>";
 // 5 MiB
 static MAX_CONENT_LENGTH: u32 = 5 << 20;
 
@@ -77,16 +80,15 @@ where
 {
     async fn handle(&self, req: D, context: Context) -> std::result::Result<S, ApiError>;
 }
+fn json_reponse(resp: impl Serialize) -> Result<Response<Body>> {
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&resp)?))?)
+}
 
-async fn handle_json<D, S, R>(
-    req: Request<Body>,
-    handler: R,
-    context: Context,
-) -> Result<Response<Body>>
+async fn json_request<D>(req: Request<Body>) -> Result<D>
 where
     D: DeserializeOwned,
-    S: Serialize,
-    R: RequestHandler<D, S>,
 {
     let content_length: u32 = parse_header(req.headers(), CONTENT_LENGTH)
         .map_err(|e| api_err!(StatusCode::LENGTH_REQUIRED, "{}", e.message))?;
@@ -105,13 +107,11 @@ where
     //.map_err(|e| api_baderr!("[JSON-Error] {}", e))?;
 
     let b = to_bytes(req.into_body()).await?;
-    let value: D = serde_json::from_slice(&b).map_err(|e| api_baderr!("[JSON-Error] {}", e))?;
-    let res: S = handler.handle(value, context).await?;
-    let json = serde_json::to_string(&res)?;
-    let resp = Response::builder()
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(json))?;
-    Ok(resp)
+    serde_json::from_slice(&b).map_err(|e| api_baderr!("[JSON-Error] {}", e))
+}
+
+macro_rules! json_resp {
+    { $value:expr } => { async move { json_reponse($value.await?) }.await }
 }
 
 async fn route_request(
@@ -124,8 +124,15 @@ async fn route_request(
         (&Method::POST, "/") | (&Method::GET, "/") | (&Method::GET, "/index.html") => {
             Ok(Response::new(INDEX.into()))
         }
-        (&Method::POST, "/interval") => handle_json(req, INTERVAL, context).await,
-        (&Method::POST, "/report") => handle_json(req, REPORT, context).await,
+        (&Method::POST, "/interval") => {
+            json_resp!(INTERVAL.handle(json_request(req).await?, context))
+        }
+        (&Method::GET, "/excess") => {
+            json_resp!(EXCESS.handle(req.uri().query().unwrap_or("").into(), context))
+        }
+        (&Method::POST, "/report") => {
+            json_resp!(REPORT.handle(json_request(req).await?, context))
+        }
         _ => {
             // Return 404 not found response.
             Err(ApiError {
@@ -165,7 +172,7 @@ async fn route_request(
 #[cfg(test)]
 mod test {
     use super::*;
-    use hyper::body::{to_bytes, Body};
+    use hyper::body::Body;
     use hyper::StatusCode;
     use mac_address::MacAddress;
 
@@ -223,39 +230,38 @@ mod test {
         let json = serde_json::to_string(&req).unwrap();
         println!("sending json '{}'", json);
 
-        let mut context = Context::load().unwrap();
-        context.remote_addr = "127.0.0.1:80".parse().ok();
-
-        let handler = || RequestHandlerMock {
-            compare_context: context.clone(),
-        };
-
         let bad_req = Request::builder()
             .method(Method::POST)
             .body(Body::from(json.clone()))
             .unwrap();
         assert_matches!(
-            handle_json(bad_req, handler(), context.clone()).await,
+            json_request::<RequestMock>(bad_req).await,
             Err(e) if e.code == StatusCode::LENGTH_REQUIRED,
             "should require a content-length header"
         );
         assert_matches!(
-            handle_json(create_req("abc", json.clone()), handler(), context.clone()).await,
+            json_request::<RequestMock>(create_req("abc", json.clone())).await,
             Err(e) if e.code == StatusCode::LENGTH_REQUIRED,
             "should require valid content-length header"
         );
-        assert_matches!(handle_json(
+        assert_matches!(json_request::<RequestMock>(
             create_req(MAX_CONENT_LENGTH + 1, json.clone()),
-            handler(),
-            context.clone(),
         )
         .await, Err(e) if e.code == StatusCode::PAYLOAD_TOO_LARGE, "should reject too large content-length");
 
-        let res = handle_json(create_req("1000", json.clone()), handler(), context.clone())
+        let req: RequestMock = json_request(create_req("1000", json.clone()))
             .await
             .unwrap();
-        let b = to_bytes(res.into_body()).await.unwrap();
-        let resp: ResponseMock = serde_json::from_slice(&b).unwrap();
+
+        let mut context = Context::load().unwrap();
+        context.remote_addr = "127.0.0.1:80".parse().ok();
+
+        let resp = RequestHandlerMock {
+            compare_context: context.clone(),
+        }
+        .handle(req, context)
+        .await
+        .unwrap();
 
         assert_eq!(
             resp,

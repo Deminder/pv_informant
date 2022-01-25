@@ -19,11 +19,12 @@ mod macros;
 mod context;
 mod errors;
 mod influx_gateway;
-mod interval_handler;
 mod neighbor;
-mod report_handler;
 mod server;
 mod wake_heartbeat;
+mod interval_handler;
+mod excess_handler;
+mod report_handler;
 
 #[tokio::main]
 async fn main() {
