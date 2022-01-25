@@ -36,7 +36,7 @@ impl Context {
             },
             wake_interval: std::time::Duration::from_secs(
                 env::var("WAKE_INTERVAL_SECONDS")
-                    .unwrap_or("120".into())
+                    .unwrap_or("600".into())
                     .parse()
                     .map_err(|e| format!("Invalid wake interval seconds config! {}", e))?,
             ),

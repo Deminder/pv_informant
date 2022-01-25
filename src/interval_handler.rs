@@ -7,9 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 use mac_address::MacAddress;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IntervalReq {
-    #[serde(default)]
     mac: Option<MacAddress>,
     start: DateTime<Utc>,
     stop: DateTime<Utc>,

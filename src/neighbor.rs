@@ -23,7 +23,7 @@ const LINUX_NET: &LinuxNetworkGateway = &LinuxNetworkGateway {};
 #[async_trait]
 impl NetworkGateway for LinuxNetworkGateway {
     async fn ping(&self, ip: IpAddr) -> Result<bool, std::io::Error> {
-        Command::new("/usr/sbin/ping")
+        Command::new("ping")
             .args(&[&ip.to_string(), "-c", "1", "-W", "1"])
             .stdout(Stdio::null())
             .status()
@@ -32,7 +32,7 @@ impl NetworkGateway for LinuxNetworkGateway {
     }
     async fn ip_neigh(&self) -> Result<String> {
         Ok(String::from_utf8(
-            Command::new("/usr/sbin/ip")
+            Command::new("ip")
                 .arg("neigh")
                 .output()
                 .await
@@ -90,7 +90,7 @@ async fn _addr_to_mac(
                     let mut found = false;
                     for s in segs {
                         if found {
-                            return Ok(Some(MacAddress::try_from(s)?));
+                            return Ok(s.parse().ok());
                         }
                         found = s == "lladdr";
                     }

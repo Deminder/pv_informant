@@ -80,7 +80,7 @@ pub async fn query_pv_excess(c: &impl QueryClient) -> Result<ExcessStatus, influ
         }
         Ok(Some(mean_current)) => {
             let mut sun_level = 0;
-            for (i, t) in SUN_LEVELS.into_iter().enumerate() {
+            for (i, t) in IntoIterator::into_iter(SUN_LEVELS).enumerate() {
                 if mean_current < t {
                     break;
                 }
