@@ -13,7 +13,7 @@ use hyper::{
     body::to_bytes, header, server::conn::AddrStream, Body, Method, Request, Response, Server,
     StatusCode,
 };
-use log::{error, info, warn};
+use log::{error, debug, warn};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -147,7 +147,7 @@ async fn route_request(
     };
     match resp {
         Ok(r) => {
-            info!("{}: OK", info_str);
+            debug!("{}: OK", info_str);
             Ok(r)
         }
         Err(e) => {

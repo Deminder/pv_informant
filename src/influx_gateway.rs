@@ -56,7 +56,7 @@ pub enum WorkerStatus {
     Working = 3,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub enum ExcessStatus {
     No = 0,
     Maybe = 1,
@@ -165,6 +165,7 @@ pub async fn log_workerstatus(
         status: status as i32,
         wake,
     };
+    info!("[{}] status: {}", mac, entry.status);
     c.query(entry.into_query(c.workerstatus())).await?;
     Ok(())
 }
@@ -181,7 +182,7 @@ pub async fn query_history_interval(
     ));
     c.query(if let Some(mac) = req.mac() {
         query.add_query(format!(
-            "SELECT time, status FROM {} WHERE {} AND mac = '{}'",
+            "SELECT time, status, wake FROM {} WHERE {} AND mac = '{}'",
             c.workerstatus(),
             interval_query,
             mac
@@ -354,7 +355,7 @@ pub mod test {
     }
 
     #[tokio::test]
-    async fn test_query_histroy_interval() {
+    async fn test_query_history_interval() {
         use chrono::{DateTime, Duration, Local, Utc};
         init_logger();
         let n = DateTime::<Utc>::from(Local::now());
@@ -378,7 +379,7 @@ pub mod test {
         let client_mac = InfluxClientMock {
             answer_map: HashMap::from([
                 (
-                    format!("SELECT time, battery_voltage, pv_voltage, pv_current, temperature FROM pvstatus WHERE {};SELECT time, status FROM workerstatus WHERE {} AND mac = '{}'",
+                    format!("SELECT time, battery_voltage, pv_voltage, pv_current, temperature FROM pvstatus WHERE {};SELECT time, status, wake FROM workerstatus WHERE {} AND mac = '{}'",
                         req.query_condition(), req.query_condition(), reqwithmac.mac().unwrap() ),
                     query_output.into(),
                 ),

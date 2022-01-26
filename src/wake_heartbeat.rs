@@ -1,7 +1,7 @@
 use crate::context::Context;
-use crate::influx_gateway::query_wake_candidates;
 use crate::influx_gateway::{log_workerstatus, query_pv_excess, WorkerStatus};
-use crate::neighbor::{macs_to_addrs, awake_macs, wake_macs};
+use crate::influx_gateway::{query_wake_candidates, ExcessStatus};
+use crate::neighbor::{sleeping_macs, macs_to_addrs, wake_macs};
 use futures::future::join_all;
 use log::{error, info};
 use std::collections::HashSet;
@@ -16,11 +16,11 @@ async fn waker_heartbeat(context: Context) {
         });
     let woken_macs = match macs_to_addrs(&macs).await {
         Ok(mac_mapping) => {
-            let macs_asleep = awake_macs(mac_mapping).await;
+            let macs_sleeping = sleeping_macs(&mac_mapping).await;
             for r in join_all(macs.iter().map(|mac| {
                 log_workerstatus(
                     mac,
-                    if macs_asleep.contains_key(mac) {
+                    if macs_sleeping.contains(mac) {
                         WorkerStatus::Sleep
                     } else {
                         WorkerStatus::Awake
@@ -38,13 +38,16 @@ async fn waker_heartbeat(context: Context) {
             // wake asleep macs if excess = Yes
             match query_pv_excess(&context.influx_client).await {
                 Ok(excess) => {
-                    info!("PV excess: {}", excess as u8);
-                    match wake_macs(&macs_asleep).await {
-                        Ok(_) => macs_asleep.into_keys().collect(),
-                        Err(e) => {
-                            error!("Waking failed! {}", e);
-                            HashSet::new()
-                        }
+                    info!("pv excess: {}", excess.clone() as u8);
+                    match excess {
+                        ExcessStatus::Yes => match wake_macs(&macs_sleeping, &mac_mapping).await {
+                            Ok(_) => macs_sleeping,
+                            Err(e) => {
+                                error!("Waking failed! {}", e);
+                                HashSet::new()
+                            }
+                        },
+                        _ => HashSet::new(),
                     }
                 }
                 Err(e) => {

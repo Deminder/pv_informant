@@ -36,7 +36,7 @@ impl NetworkGateway for LinuxNetworkGateway {
                 .arg("neigh")
                 .output()
                 .await
-                .with_context(|| "/usr/sbin/ip failed")?
+                .with_context(|| "'ip neigh' failed")?
                 .stdout,
         )?)
     }
@@ -101,25 +101,21 @@ async fn _addr_to_mac(
     Ok(None)
 }
 
-pub async fn awake_macs(mac_mapping: MacIpMapping) -> HashMap<MacAddress, Option<IpAddr>> {
-    _awake_macs(mac_mapping, LINUX_NET).await
+pub async fn sleeping_macs(mac_mapping: &MacIpMapping) -> HashSet<MacAddress> {
+    _sleeping_macs(mac_mapping, LINUX_NET).await
 }
 
-async fn _awake_macs(
-    mac_mapping: MacIpMapping,
+async fn _sleeping_macs(
+    mac_mapping: &MacIpMapping,
     net: &impl NetworkGateway,
-) -> HashMap<MacAddress, Option<IpAddr>> {
-    // remove awake: macs which respond to ping are awake (ip-address from arp-table)
-    let mut sleeping = HashMap::new();
+) -> HashSet<MacAddress> {
+    // macs which respond to ping are awake (ip-address from arp-table)
+    let mut sleeping = HashSet::new();
     for (mac, ip_opt) in mac_mapping.into_iter() {
-        sleeping.insert(
-            mac,
-            match ip_opt {
-                // interpret mac/ip as sleeping if ping not successful
-                Some(ip) if net.ping(ip).await.unwrap_or(false) => Some(ip),
-                _ => None,
-            },
-        );
+        if ip_opt.is_none() || !net.ping(ip_opt.unwrap()).await.unwrap_or(false) {
+            // interpret mac/ip as sleeping if ping not successful
+            sleeping.insert(mac.clone());
+        }
     }
     sleeping
 }
@@ -135,13 +131,17 @@ fn addr_to_broadcast(ip_opt: &Option<IpAddr>) -> IpAddr {
     }
 }
 
-pub async fn wake_macs(mac_mapping: &HashMap<MacAddress, Option<IpAddr>>) -> Result<()> {
+pub async fn wake_macs(
+    sleeping_macs: &HashSet<MacAddress>,
+    mac_mapping: &MacIpMapping,
+) -> Result<()> {
     // send magic packet to sleeping macs
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)).await?;
     socket.set_broadcast(true)?;
-    for (m, ip_opt) in mac_mapping {
+    for m in sleeping_macs {
         let pkt = wake_on_lan::MagicPacket::new(&m.bytes());
+        let ip_opt = mac_mapping.get(m).unwrap_or(&None);
         let brd_ip: IpAddr = addr_to_broadcast(ip_opt);
         interval.tick().await;
         socket
@@ -322,30 +322,29 @@ fe80::abcd:abcd:abcd:abcd dev enp4s0 lladdr 44:4e:6d:c2:37:4b router DELAY
         let awake_mac: MacAddress = "12:34:56:78:9a:bc".parse().unwrap();
         let none_mac_mapping: MacIpMapping = [(awake_mac.clone(), None)].into_iter().collect();
         assert_eq!(
-            _awake_macs(none_mac_mapping.clone(), net).await,
-            none_mac_mapping,
-            "should leave None values in mapping"
+            _sleeping_macs(&none_mac_mapping, net).await,
+            [awake_mac].into_iter().collect::<HashSet<MacAddress>>(),
+            "should interpret unavaliable ips as sleeping"
         );
         let sleep_mac: MacAddress = "12:34:56:78:9a:bc".parse().unwrap();
         let sleep_mac2: MacAddress = "23:23:23:23:23:23".parse().unwrap();
         let failing_mac: MacAddress = "33:33:33:33:33:33".parse().unwrap();
+        let uavail_mac: MacAddress = "22:22:22:22:22:22".parse().unwrap();
         let mac_mapping: MacIpMapping = [
             (awake_mac.clone(), Some(awake_ip.clone())),
             (sleep_mac.clone(), Some(sleep_ip.clone())),
             (sleep_mac2.clone(), Some(sleep_ip2.clone())),
-            ("22:22:22:22:22:22".parse().unwrap(), None),
+            (uavail_mac.clone(), None),
             (failing_mac.clone(), Some(failing_ip.clone())),
         ]
         .into_iter()
         .collect();
-        let mut expected_mapping = mac_mapping.clone();
-        expected_mapping.insert(sleep_mac, None);
-        expected_mapping.insert(sleep_mac2, None);
-        expected_mapping.insert(failing_mac, None);
 
         assert_eq!(
-            _awake_macs(mac_mapping, net).await,
-            expected_mapping,
+            _sleeping_macs(&mac_mapping, net).await,
+            [sleep_mac, sleep_mac2, failing_mac, uavail_mac]
+                .into_iter()
+                .collect::<HashSet<MacAddress>>(),
             "should set all ips of sleeping macs to None"
         );
     }
@@ -353,8 +352,17 @@ fe80::abcd:abcd:abcd:abcd dev enp4s0 lladdr 44:4e:6d:c2:37:4b router DELAY
     #[test]
     fn test_addr_to_broadcast() {
         assert_eq!(addr_to_broadcast(&None).to_string(), "255.255.255.255");
-        assert_eq!(addr_to_broadcast(&"fe80::abcd:abcd:abcd:abcd".parse().ok()).to_string(), "255.255.255.255");
-        assert_eq!(addr_to_broadcast(&"192.168.178.23".parse().ok()).to_string(), "192.168.178.255");
-        assert_eq!(addr_to_broadcast(&"192.168.122.55".parse().ok()).to_string(), "192.168.122.255");
+        assert_eq!(
+            addr_to_broadcast(&"fe80::abcd:abcd:abcd:abcd".parse().ok()).to_string(),
+            "255.255.255.255"
+        );
+        assert_eq!(
+            addr_to_broadcast(&"192.168.178.23".parse().ok()).to_string(),
+            "192.168.178.255"
+        );
+        assert_eq!(
+            addr_to_broadcast(&"192.168.122.55".parse().ok()).to_string(),
+            "192.168.122.255"
+        );
     }
 }
