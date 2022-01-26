@@ -169,7 +169,7 @@ pub async fn log_workerstatus(
     Ok(())
 }
 
-pub async fn query_histroy_interval(
+pub async fn query_history_interval(
     req: &IntervalReq,
     c: &impl QueryClient,
 ) -> Result<String, influxdb::Error> {
@@ -181,7 +181,7 @@ pub async fn query_histroy_interval(
     ));
     c.query(if let Some(mac) = req.mac() {
         query.add_query(format!(
-            "SELECT time, status FROM {} WHERE {} AND mac = \"{}\"",
+            "SELECT time, status FROM {} WHERE {} AND mac = '{}'",
             c.workerstatus(),
             interval_query,
             mac
@@ -369,7 +369,7 @@ pub mod test {
             ]),
         };
         assert_matches!(
-            query_histroy_interval(&req, &client).await,
+            query_history_interval(&req, &client).await,
             Ok(output) if output == query_output,
             "should query without workerstatus if mac is None"
         );
@@ -378,14 +378,14 @@ pub mod test {
         let client_mac = InfluxClientMock {
             answer_map: HashMap::from([
                 (
-                    format!("SELECT time, battery_voltage, pv_voltage, pv_current, temperature FROM pvstatus WHERE {};SELECT time, status FROM workerstatus WHERE {} AND mac = \"{}\"",
+                    format!("SELECT time, battery_voltage, pv_voltage, pv_current, temperature FROM pvstatus WHERE {};SELECT time, status FROM workerstatus WHERE {} AND mac = '{}'",
                         req.query_condition(), req.query_condition(), reqwithmac.mac().unwrap() ),
                     query_output.into(),
                 ),
             ]),
         };
         assert_matches!(
-            query_histroy_interval(&reqwithmac, &client_mac).await,
+            query_history_interval(&reqwithmac, &client_mac).await,
             Ok(output) if output == query_output,
             "should query with workerstatus if Some(mac)"
         );

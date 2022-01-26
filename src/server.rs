@@ -80,10 +80,11 @@ where
 {
     async fn handle(&self, req: D, context: Context) -> std::result::Result<S, ApiError>;
 }
-fn json_reponse(resp: impl Serialize) -> Result<Response<Body>> {
+
+fn json_reponse(json: String) -> Result<Response<Body>> {
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_string(&resp)?))?)
+        .body(Body::from(json))?)
 }
 
 async fn json_request<D>(req: Request<Body>) -> Result<D>
@@ -111,7 +112,7 @@ where
 }
 
 macro_rules! json_resp {
-    { $value:expr } => { async move { json_reponse($value.await?) }.await }
+    { $value:expr } => { async move { json_reponse(serde_json::to_string(&$value.await?)?) }.await }
 }
 
 async fn route_request(
@@ -125,7 +126,9 @@ async fn route_request(
             Ok(Response::new(INDEX.into()))
         }
         (&Method::POST, "/interval") => {
-            json_resp!(INTERVAL.handle(json_request(req).await?, context))
+            async move {
+                json_reponse(INTERVAL.handle(json_request(req).await?, context).await?)
+            }.await
         }
         (&Method::GET, "/excess") => {
             json_resp!(EXCESS.handle(req.uri().query().unwrap_or("").into(), context))
@@ -175,6 +178,10 @@ mod test {
     use hyper::body::Body;
     use hyper::StatusCode;
     use mac_address::MacAddress;
+
+    use serde::{Deserialize, Serialize};
+
+
 
     #[derive(Debug, Serialize, Deserialize)]
     struct RequestMock {

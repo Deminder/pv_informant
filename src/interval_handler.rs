@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::errors::ApiError;
-use crate::influx_gateway::query_histroy_interval;
+use crate::influx_gateway::query_history_interval;
 use crate::server::RequestHandler;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -17,7 +17,7 @@ pub struct IntervalReq {
 impl IntervalReq {
     pub fn query_condition(&self) -> String {
         format!(
-            "time > {} AND time < {}",
+            "time > '{}' AND time < '{}'",
             self.start.to_rfc3339(),
             self.stop.to_rfc3339()
         )
@@ -25,12 +25,6 @@ impl IntervalReq {
     pub fn mac(&self) -> Option<MacAddress> {
         self.mac
     }
-}
-
-#[derive(Serialize)]
-pub struct IntervalRes {
-    query: IntervalReq,
-    value: String,
 }
 
 const MAX_QUERY_DAYS: i64 = 20;
@@ -46,8 +40,8 @@ fn validate_request(req: &IntervalReq) -> Result<(), ApiError> {
 pub struct IntervalRequestHandler {}
 
 #[async_trait]
-impl RequestHandler<IntervalReq, IntervalRes> for IntervalRequestHandler {
-    async fn handle(&self, req: IntervalReq, context: Context) -> Result<IntervalRes, ApiError> {
+impl RequestHandler<IntervalReq, String> for IntervalRequestHandler {
+    async fn handle(&self, req: IntervalReq, context: Context) -> Result<String, ApiError> {
         let mut req = req;
         if req.mac.is_none() {
             // try using the mac of the requester for query
@@ -56,12 +50,9 @@ impl RequestHandler<IntervalReq, IntervalRes> for IntervalRequestHandler {
         if let Err(e) = validate_request(&req) {
             Err(e)
         } else {
-            Ok(IntervalRes {
-                value: query_histroy_interval(&req, &context.influx_client)
-                    .await
-                    .map_err(|e| fwd_err!("Query failed! {}", e))?,
-                query: req,
-            })
+            Ok(query_history_interval(&req, &context.influx_client)
+                .await
+                .map_err(|e| fwd_err!("Query failed! {}", e))?)
         }
     }
 }

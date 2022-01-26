@@ -90,7 +90,7 @@ async fn _addr_to_mac(
                     let mut found = false;
                     for s in segs {
                         if found {
-                            return Ok(s.parse().ok());
+                            return Ok(Some(s.parse()?));
                         }
                         found = s == "lladdr";
                     }
@@ -213,7 +213,7 @@ mod test {
         "#
         );
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
-        assert!(_addr_to_mac(ip("192.168.178.1"), bad_sample).await.is_err());
+        assert_matches!(_addr_to_mac(ip("192.168.178.1"), bad_sample).await, Err(_));
         let sample = neigh_resp!(
             r#"
 192.168.178.26 dev enp4s0 lladdr 12:34:56:78:9a:bc REACHABLE
