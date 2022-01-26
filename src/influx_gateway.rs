@@ -8,7 +8,6 @@ use influxdb::{
 use mac_address::MacAddress;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 #[derive(InfluxDbWriteable)]
 pub struct WorkerStatusEntry {
@@ -193,16 +192,17 @@ pub async fn query_history_interval(
     .await
 }
 
-pub async fn query_wake_candidates(
+pub async fn query_stale_macs(
     c: &impl QueryClient,
-) -> Result<HashSet<MacAddress>, influxdb::Error> {
+) -> Result<Vec<(MacAddress, bool)>, influxdb::Error> {
     #[derive(Debug, Deserialize)]
-    struct WorkerMac {
+    struct StaleWorker {
         mac: String,
+        wake: bool,
     }
     let select_wake_macs = format!(
         // macs that want to be woken ( wake = true )
-        "SELECT mac FROM (SELECT last(status) AS s,last(wake) AS w FROM {} GROUP BY mac) WHERE w = true AND",
+        "SELECT mac,wake FROM (SELECT last(status) AS s,last(wake) AS wake FROM {} GROUP BY mac) WHERE",
         c.workerstatus()
     );
     let query = ReadQuery::new(format!(
@@ -213,14 +213,14 @@ pub async fn query_wake_candidates(
     ))
     .add_query(format!(
         // non-inquisitive or non-working
-        "{} s < {}",
+        "{} s < {} AND wake = true",
         select_wake_macs,
         WorkerStatus::Inquisitive as u8,
     ));
     c.json_query(query)
         .await
         .and_then(|mut db_result| {
-            let mut next_mac_iter = || db_result.deserialize_next::<WorkerMac>();
+            let mut next_mac_iter = || db_result.deserialize_next::<StaleWorker>();
             Ok((next_mac_iter()?, next_mac_iter()?))
         })
         .map(|(r1, r2)| {
@@ -228,7 +228,7 @@ pub async fn query_wake_candidates(
                 .into_iter()
                 .chain(r2.series.into_iter())
                 .flat_map(|s| s.values.into_iter())
-                .filter_map(|mac| mac.mac.parse().ok())
+                .filter_map(|w| w.mac.parse().map(|m| (m,w.wake)).ok())
                 .collect()
         })
 }
@@ -406,47 +406,47 @@ pub mod test {
             );
         }
 
-        let base_query = "SELECT mac FROM (SELECT last(status) AS s,last(wake) AS w FROM workerstatus GROUP BY mac) WHERE w = true AND";
+        let base_query = "SELECT mac,wake FROM (SELECT last(status) AS s,last(wake) AS wake FROM workerstatus GROUP BY mac) WHERE";
         let inq = WorkerStatus::Inquisitive as i32;
         let query_output = r#"[{
             "series": [{
                 "name":"workers_stale",
-                "columns": ["mac"],
+                "columns": ["mac","wake"],
                 "values": [ 
-                ["11:22:33:44:55:66"], ["11:22:33:44:55:77"], ["11:22:33:44:55:88"]
+                ["11:22:33:44:55:66",true], ["11:22:33:44:55:77",false], ["11:22:33:44:55:88",true]
                 ]
             }]},{
             "series": [{
                 "name":"workers_sleeping",
-                "columns": ["mac"],
+                "columns": ["mac","wake"],
                 "values": [ 
-                ["11:22:33:44:55:99"], ["11:22:33:44:55:aa"], ["11:22:33:44:55:bb"]
+                ["11:22:33:44:55:99",true], ["11:22:33:44:55:aa",true], ["11:22:33:44:55:bb",true]
                 ]
             }]}]"#;
-        let expected_candiates: HashSet<MacAddress> = [
-            "11:22:33:44:55:66",
-            "11:22:33:44:55:77",
-            "11:22:33:44:55:88",
-            "11:22:33:44:55:99",
-            "11:22:33:44:55:aa",
-            "11:22:33:44:55:bb",
+        let expected_stale_macs: Vec<(MacAddress, bool)> = [
+            ("11:22:33:44:55:66", true),
+            ("11:22:33:44:55:77", false),
+            ("11:22:33:44:55:88", true),
+            ("11:22:33:44:55:99", true),
+            ("11:22:33:44:55:aa", true),
+            ("11:22:33:44:55:bb", true),
         ]
         .into_iter()
-        .map(|s| s.parse().unwrap())
+        .map(|(s,b)| (s.parse().unwrap(), b))
         .collect();
         let client = InfluxClientMock {
             answer_map: HashMap::from([(
                 format!(
-                    "{} s >= {} AND time < now() - 10m;{} s < {}",
+                    "{} s >= {} AND time < now() - 10m;{} s < {} AND wake = true",
                     base_query, inq, base_query, inq
                 ),
                 query_output.into(),
             )]),
         };
-        let candidates = query_wake_candidates(&client).await.unwrap();
+        let stale_macs = query_stale_macs(&client).await.unwrap();
         assert_eq!(
-            candidates, expected_candiates,
-            "should output all macs in response"
+            stale_macs, expected_stale_macs,
+            "should include all macs in response"
         );
     }
 
