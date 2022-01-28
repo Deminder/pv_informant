@@ -60,7 +60,7 @@ impl RequestHandler<IntervalReq, String> for IntervalRequestHandler {
 #[cfg(test)]
 mod test {
     use super::*;
-    use chrono::{DateTime, Duration, Local, Utc};
+    use chrono::{DateTime, Duration, Utc};
 
     impl IntervalReq {
         pub fn new(mac: Option<MacAddress>, start: DateTime<Utc>, stop: DateTime<Utc>) -> Self {
@@ -69,7 +69,7 @@ mod test {
     }
     #[test]
     fn test_validation() {
-        let n = DateTime::<Utc>::from(Local::now());
+        let n = Utc::now();
         let mut req = IntervalReq {
             mac: None,
             start: n,

@@ -1,7 +1,7 @@
 use crate::context::InfluxClient;
 use crate::interval_handler::IntervalReq;
 use async_trait::async_trait;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Duration, Utc};
 use influxdb::{
     integrations::serde_integration::DatabaseQueryResult, InfluxDbWriteable, Query, ReadQuery,
 };
@@ -9,7 +9,7 @@ use mac_address::MacAddress;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-#[derive(InfluxDbWriteable)]
+#[derive(Debug, InfluxDbWriteable)]
 pub struct WorkerStatusEntry {
     #[influxdb(tag)]
     mac: String,
@@ -127,7 +127,7 @@ where
     }
     query_values::<MeanMeasurement, Q>(
         c,
-        format!(
+        &format!(
             "SELECT mean(\"{}\") AS mean FROM {} WHERE time > now() - {}",
             field, measurement, duration
         ),
@@ -137,12 +137,12 @@ where
     .map(|v| v.map(|m| m.mean))
 }
 
-pub async fn query_values<D: 'static, Q>(c: &Q, query: String) -> Result<Vec<D>, influxdb::Error>
+pub async fn query_values<D, Q>(c: &Q, query: &str) -> Result<Vec<D>, influxdb::Error>
 where
-    D: DeserializeOwned + Send,
+    D: DeserializeOwned + Send + 'static,
     Q: QueryClient,
 {
-    c.json_query(ReadQuery::new(&query))
+    c.json_query(ReadQuery::new(query))
         .await
         .and_then(|mut db_result| db_result.deserialize_next::<D>())
         .map(|m| m.series.into_iter().next())
@@ -160,7 +160,7 @@ pub async fn log_workerstatus(
     // log workerstatus to influxdb
     let entry = WorkerStatusEntry {
         mac: mac.to_string(),
-        time: DateTime::<Utc>::from(Local::now()),
+        time: Utc::now(),
         status: status as i32,
         wake,
     };
@@ -175,13 +175,13 @@ pub async fn query_history_interval(
 ) -> Result<String, influxdb::Error> {
     let interval_query = req.query_condition();
     let query = ReadQuery::new(format!(
-        "SELECT time, battery_voltage, pv_voltage, pv_current, temperature FROM {} WHERE {}",
+        "SELECT battery_voltage, pv_voltage, pv_current, temperature FROM {} WHERE {} ORDER BY time ASC",
         c.pvstatus(),
         interval_query
     ));
     c.query(if let Some(mac) = req.mac() {
         query.add_query(format!(
-            "SELECT time, status, wake FROM {} WHERE {} AND mac = '{}'",
+            "SELECT status, wake FROM {} WHERE {} AND mac = '{}' ORDER BY time ASC",
             c.workerstatus(),
             interval_query,
             mac
@@ -192,45 +192,44 @@ pub async fn query_history_interval(
     .await
 }
 
-pub async fn query_stale_macs(
-    c: &impl QueryClient,
+const WORKER_STALE_MINS: i64 = 10;
+
+pub async fn query_stale_macs<Q: QueryClient>(
+    c: &Q,
 ) -> Result<Vec<(MacAddress, bool)>, influxdb::Error> {
-    #[derive(Debug, Deserialize)]
-    struct StaleWorker {
+    #[derive(Deserialize)]
+    struct EntryTag {
         mac: String,
+    }
+
+    #[derive(Deserialize)]
+    struct Entry {
+        time: DateTime<Utc>,
+        status: i32,
         wake: bool,
     }
-    let select_wake_macs = format!(
-        // macs that want to be woken ( wake = true )
-        "SELECT mac,wake FROM (SELECT last(status) AS s,last(wake) AS wake FROM {} GROUP BY mac) WHERE",
+
+    let now_m_10m = Utc::now() - Duration::minutes(WORKER_STALE_MINS);
+    c.json_query(ReadQuery::new(&format!(
+        "SELECT last(\"status\") AS status,wake,time FROM {} GROUP BY mac",
         c.workerstatus()
-    );
-    let query = ReadQuery::new(format!(
-        // stale working or inquisitive status
-        "{} s >= {} AND time < now() - 10m",
-        select_wake_macs,
-        WorkerStatus::Inquisitive as u8,
-    ))
-    .add_query(format!(
-        // non-inquisitive or non-working
-        "{} s < {} AND wake = true",
-        select_wake_macs,
-        WorkerStatus::Inquisitive as u8,
-    ));
-    c.json_query(query)
-        .await
-        .and_then(|mut db_result| {
-            let mut next_mac_iter = || db_result.deserialize_next::<StaleWorker>();
-            Ok((next_mac_iter()?, next_mac_iter()?))
-        })
-        .map(|(r1, r2)| {
-            r1.series
-                .into_iter()
-                .chain(r2.series.into_iter())
-                .flat_map(|s| s.values.into_iter())
-                .filter_map(|w| w.mac.parse().map(|m| (m,w.wake)).ok())
-                .collect()
-        })
+    )))
+    .await
+    .and_then(|mut db_result| db_result.deserialize_next_tagged::<EntryTag, Entry>())
+    .map(|r| {
+        r.series
+            .into_iter()
+            .filter_map(|s| {
+                s.values
+                    .first()
+                    .filter(|e| {
+                        let active = e.status >= { WorkerStatus::Inquisitive as i32 };
+                        (active && e.time < now_m_10m) || (!active && e.wake)
+                    })
+                    .and_then(|e| s.tags.mac.parse().ok().map(|m| (m, e.wake)))
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -356,15 +355,15 @@ pub mod test {
 
     #[tokio::test]
     async fn test_query_history_interval() {
-        use chrono::{DateTime, Duration, Local, Utc};
+        use chrono::{Duration, Utc};
         init_logger();
-        let n = DateTime::<Utc>::from(Local::now());
+        let n = Utc::now();
         let req = IntervalReq::new(None, n, n + Duration::days(7));
         let query_output = "some query output";
         let client = InfluxClientMock {
             answer_map: HashMap::from([
                 (
-                    format!("SELECT time, battery_voltage, pv_voltage, pv_current, temperature FROM pvstatus WHERE {}", req.query_condition()),
+                    format!("SELECT battery_voltage, pv_voltage, pv_current, temperature FROM pvstatus WHERE {} ORDER BY time ASC", req.query_condition()),
                     query_output.into(),
                 ),
             ]),
@@ -379,7 +378,7 @@ pub mod test {
         let client_mac = InfluxClientMock {
             answer_map: HashMap::from([
                 (
-                    format!("SELECT time, battery_voltage, pv_voltage, pv_current, temperature FROM pvstatus WHERE {};SELECT time, status, wake FROM workerstatus WHERE {} AND mac = '{}'",
+                    format!("SELECT battery_voltage, pv_voltage, pv_current, temperature FROM pvstatus WHERE {} ORDER BY time ASC;SELECT status, wake FROM workerstatus WHERE {} AND mac = '{}' ORDER BY time ASC",
                         req.query_condition(), req.query_condition(), reqwithmac.mac().unwrap() ),
                     query_output.into(),
                 ),
@@ -393,7 +392,7 @@ pub mod test {
     }
 
     #[tokio::test]
-    async fn test_query_wake_candidates() {
+    async fn test_query_stale_macs() {
         init_logger();
         for (a, b) in [
             (WorkerStatus::Sleep, WorkerStatus::Awake),
@@ -406,47 +405,66 @@ pub mod test {
             );
         }
 
-        let base_query = "SELECT mac,wake FROM (SELECT last(status) AS s,last(wake) AS wake FROM workerstatus GROUP BY mac) WHERE";
         let inq = WorkerStatus::Inquisitive as i32;
-        let query_output = r#"[{
-            "series": [{
-                "name":"workers_stale",
-                "columns": ["mac","wake"],
-                "values": [ 
-                ["11:22:33:44:55:66",true], ["11:22:33:44:55:77",false], ["11:22:33:44:55:88",true]
-                ]
-            }]},{
-            "series": [{
-                "name":"workers_sleeping",
-                "columns": ["mac","wake"],
-                "values": [ 
-                ["11:22:33:44:55:99",true], ["11:22:33:44:55:aa",true], ["11:22:33:44:55:bb",true]
-                ]
-            }]}]"#;
-        let expected_stale_macs: Vec<(MacAddress, bool)> = [
+
+        let time_non_stale = Utc::now();
+        let time_stale = Utc::now() - Duration::minutes(WORKER_STALE_MINS + 1);
+        let serie = r#"{
+            "name":"workerstatus",
+            "tags": [ TAGS ],
+            "columns": ["time", "status", "wake"],
+            "values": [ VALUES ]
+        }"#;
+        let query_output = r#"[{"series": [SERIES]}]"#.replace(
+            "SERIES",
+            &[
+                (time_stale, "11:22:33:44:55:66", 0, true),
+                (time_non_stale, "11:22:33:44:55:77", 0, true),
+                (time_non_stale, "11:22:33:44:55:88", inq - 1, true),
+                (time_stale, "11:22:33:44:55:99", inq, true),
+                (time_stale, "11:22:33:44:55:AA", inq, false),
+                (time_non_stale, "11:22:33:44:55:BB", inq, true),
+                (time_non_stale, "11:22:33:44:55:CC", inq, false),
+                (time_non_stale, "11:22:33:44:55:DD", inq + 1, true),
+                (time_stale, "11:22:33:44:55:EE", inq - 1, false),
+                (time_stale, "11:22:33:44:55:FF", 0, false),
+            ]
+            .into_iter()
+            .map(|(t, m, s, w)| {
+                serie
+                    .replace("TAGS", &format!("\"{}\"", m))
+                    .replace("VALUES", &format!("[\"{}\", {}, {}]", t.to_rfc3339(), s, w))
+            })
+            .collect::<Vec<String>>()
+            .join(","),
+        );
+
+        let expected_stale_macs: Vec<(String, bool)> = [
             ("11:22:33:44:55:66", true),
-            ("11:22:33:44:55:77", false),
+            ("11:22:33:44:55:77", true),
             ("11:22:33:44:55:88", true),
             ("11:22:33:44:55:99", true),
-            ("11:22:33:44:55:aa", true),
-            ("11:22:33:44:55:bb", true),
+            ("11:22:33:44:55:AA", false),
         ]
         .into_iter()
-        .map(|(s,b)| (s.parse().unwrap(), b))
+        .map(|(m, b)| (m.into(), b))
         .collect();
+
         let client = InfluxClientMock {
             answer_map: HashMap::from([(
-                format!(
-                    "{} s >= {} AND time < now() - 10m;{} s < {} AND wake = true",
-                    base_query, inq, base_query, inq
-                ),
+                "SELECT last(\"status\") AS status,wake,time FROM workerstatus GROUP BY mac".into(),
                 query_output.into(),
             )]),
         };
-        let stale_macs = query_stale_macs(&client).await.unwrap();
+        let stale_macs: Vec<(String, bool)> = query_stale_macs(&client)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(m, b)| (m.to_string(), b))
+            .collect();
         assert_eq!(
             stale_macs, expected_stale_macs,
-            "should include all macs in response"
+            "should include only expected macs in response"
         );
     }
 

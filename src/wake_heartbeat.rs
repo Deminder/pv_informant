@@ -22,6 +22,7 @@ async fn waker_heartbeat(context: Context) {
         } else {
             // do not ping macs with wake = false 
             logs.push((m, WorkerStatus::Sleep, false));
+            debug!("[{}] stale but nowake", m);
         }
     }
     let mac_mapping = macs_to_addrs(&wake_candidates).await;

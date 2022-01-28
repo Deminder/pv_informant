@@ -23,6 +23,7 @@ const LINUX_NET: &LinuxNetworkGateway = &LinuxNetworkGateway {};
 #[async_trait]
 impl NetworkGateway for LinuxNetworkGateway {
     async fn ping(&self, ip: IpAddr) -> Result<bool, std::io::Error> {
+        debug!("ping {}", ip);
         Command::new("ping")
             .args(&[&ip.to_string(), "-c", "1", "-W", "1"])
             .stdout(Stdio::null())
