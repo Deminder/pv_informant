@@ -16,6 +16,7 @@ use hyper::{
 use log::{error, debug, warn};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::net::{SocketAddr, IpAddr};
 
 pub struct InformantServer {
     context: Context,
@@ -41,6 +42,10 @@ impl HyperServerWrapper for InformantServer {
 
             async {
                 Ok::<_, Infallible>(service_fn(move |req| {
+                    let mut context = context.clone();
+                    if let Ok(remote_ip) = parse_header::<IpAddr>(req.headers(), HeaderName::from_static("x-forwarded-for")) {
+                        context.remote_addr = Some(SocketAddr::new(remote_ip, context.remote_addr.unwrap().port()));
+                    }
                     route_request(req, context.to_owned())
                 }))
             }
