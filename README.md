@@ -1,25 +1,20 @@
 # PV Informant
-Informant for photo-voltaic data from influxdb.
-Exposes simple JSON-API to query InfluxDB instance for photovoltaic (PV) data and register clients to Wake-On-LAN (WoL).
+This informant may be queried if excess power of a photovoltaic (PV) installation is available.
+
+To this end, it exposes a simple JSON-API to query an InfluxDB instance for PV data and periodically checks if PV excess is available to wake registered wokers with Wake-On-LAN (WoL).
 
 ## Features
 
-- Query PV power availability and register for WoL
-  - Informant decides heuristically whether excess PV power is available
-  - Woken over Ethernet via magic packet if PV power is available
-- Report work activity by MAC
-- Query time intervals of working status of a MAC
-- Query time intervals of PV data
+- Query time intervals of influxdb measurements `pvstatus` and `workerstatus`
+- Query availability of excess PV power (`Yes/Maybe/No`) 
+  - Decided with thresholds of panel current and battery voltage from `pvstatus`
+- Reported `work` (and `wake`) is logged to `workerstatus` 
+  - Tagged with requestor MAC address
+- Wakes clients/workers with `wake=true` over Ethernet via magic packet if PV excess available 
 
 - Configure InfluxDB with: `INFLUXDB_CLIENT=user:password@http://host:port:dbname`
-  - Use measurements `workerstatus` and `pvstatus`
-
-## 
-- mDNS support (with avahi) `pv-informant._http._tcp.local`
-- TLS support (`CERT_FILE=/path/to/informant.cert.pem`)
 
 ### InfluxDB Schema
-Used fields of influxDB pv measurement:
+Used influxdb measurement schema:
 `pvstatus fields: [battery_voltage, pv_voltage, pv_current, temperature]`
-`workerstatus tags: [mac] fields: [status]`
-
+`workerstatus tags: [mac] fields: [work, wake]`
